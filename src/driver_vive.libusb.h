@@ -215,13 +215,25 @@ static void handle_transfer(struct libusb_transfer *transfer) {
 	if (!iface->shutdown && transfer->status == LIBUSB_TRANSFER_TIMED_OUT) {
         iface->consecutive_timeouts++;
 		bool is_rf_device = survive_device_is_rf(iface->usbInfo->device_info);
-        if(iface->consecutive_timeouts >= 3 || is_rf_device) {
+        if(is_rf_device) {
             SV_WARN("%f %s Device turned off: %d", survive_run_time(ctx), survive_colorize_codename(iface->assoc_obj),
                     transfer->status);
             goto object_turned_off;
-        } else {
-            return;
         }
+		// A wired device that is unplugged completes its transfers with an error, not with a
+		// timeout.  A timeout on a wired device only means that no packet arrived within the
+		// timeout: the lightcap interface of a tracker sends nothing while all of its sensors are
+		// occluded.  Submit the transfer again; returning without doing so stops this interface
+		// for the rest of the process, so the light data never resumes once the sensors see the
+		// base stations again.
+		if (iface->consecutive_timeouts == 1) {
+			SV_INFO("%f %s %s: no packet for %u ms; still listening", survive_run_time(ctx),
+					survive_colorize_codename(iface->assoc_obj), survive_colorize(iface->hname), transfer->timeout);
+		}
+		if (libusb_submit_transfer(transfer)) {
+			goto shutdown;
+		}
+		return;
 	}
 
 	if (!iface->shutdown && transfer->status != LIBUSB_TRANSFER_COMPLETED) {
